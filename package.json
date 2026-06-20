@@ -3,11 +3,23 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "deploy": "uv run pywrangler deploy",
-    "dev": "uv run pywrangler dev",
-    "start": "uv run pywrangler dev"
+    "build": "vite build",
+    "check": "npm run build && uv run pywrangler deploy --dry-run",
+    "deploy": "npm run build && uv run pywrangler deploy",
+    "dev": "npm run build && uv run pywrangler dev",
+    "dev:frontend": "vite --host 0.0.0.0 --port 5173",
+    "dev:worker": "npm run build && uv run pywrangler dev --port 8787",
+    "start": "npm run dev"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.16",
     "wrangler": "^4.103.0"
+  },
+  "dependencies": {
+    "@cloudflare/kumo": "^2.5.2",
+    "@phosphor-icons/react": "^2.1.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   }
 }

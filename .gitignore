@@ -49,6 +49,7 @@ jspm_packages/
 \*.tgz
 
 # public
+dist/
 
 # Stores VSCode versions used for testing VSCode extensions
 
