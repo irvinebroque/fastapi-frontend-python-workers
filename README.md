@@ -1,15 +1,22 @@
-# FastAPI Frontend on Cloudflare Python Workers
+# FastAPI `app.frontend()` on Python Workers
 
-This repository shows the Cloudflare Workers version of the FastAPI frontend tutorial with a modern JavaScript frontend:
+This repository explores how close Cloudflare Python Workers can get to the
+FastAPI frontend tutorial while using a modern JavaScript frontend.
+
+It currently demonstrates a working full-stack app that:
 
 1. Build a React frontend with Vite and Kumo UI into a static `dist/` directory.
 2. Serve that frontend from the same origin as the API.
 3. Keep normal FastAPI path operations for `/api`.
 4. Deploy the whole thing to Cloudflare with Python Workers.
 
-In the FastAPI tutorial, `app.frontend("/", directory="dist")` makes FastAPI serve the built frontend. On Cloudflare Workers, the equivalent production shape is to let Cloudflare Static Assets serve `dist/` and let the Python Worker run only for API routes. That keeps the FastAPI developer experience while avoiding Python Worker invocations for every image, CSS file, or browser navigation.
+In the FastAPI tutorial, `app.frontend("/", directory="dist")` makes FastAPI
+serve the built frontend from the same Python application that handles API
+routes. On Cloudflare Workers today, this project uses Cloudflare Static Assets
+for `dist/` and keeps FastAPI focused on the backend routes.
 
-The important distinction: FastAPI powers the backend. Cloudflare serves the built frontend assets.
+That distinction matters: the app works, but someone coming from FastAPI cannot
+yet use FastAPI's built-in `app.frontend()` API unchanged on Python Workers.
 
 ## Live Example
 
@@ -165,7 +172,10 @@ After deploy, Wrangler prints the `workers.dev` URL. The live app should serve t
 
 ## Why This Is Not `app.frontend()`
 
-The FastAPI tutorial is exactly right for a Python server that owns both the API and static file serving. On Workers, Cloudflare already has first-class static asset serving and caching at the platform layer. So this repo maps the tutorial's idea like this:
+The FastAPI tutorial is exactly right for a Python server that owns both the API
+and static file serving. On Workers, Cloudflare already has first-class static
+asset serving and caching at the platform layer. So this repo maps the
+tutorial's idea like this:
 
 | FastAPI tutorial | Cloudflare Workers version |
 | --- | --- |
@@ -176,4 +186,79 @@ The FastAPI tutorial is exactly right for a Python server that owns both the API
 
 That gives people coming from FastAPI the same app shape with Cloudflare's deployment model.
 
-If you specifically want to prove FastAPI itself can serve frontend assets with `app.frontend()`, that is a different example. For Cloudflare Workers, this repository chooses the platform-native approach: static assets at Cloudflare's asset layer, FastAPI at the API layer.
+But it is not the same API. The frontend is not currently served by FastAPI's
+`app.frontend()` method.
+
+## What Happened When Trying `app.frontend()`
+
+FastAPI 0.138.0 includes `app.frontend()`, so this project tried the literal
+FastAPI tutorial code:
+
+```python
+app.frontend("/", directory="dist")
+```
+
+That failed during Python Worker deployment validation because the Worker
+runtime imports and validates the Python app before serving traffic, and the
+`dist` directory is not present in the Python Worker filesystem. The error
+resolved the path as `/dist`.
+
+This project also tried disabling the startup directory check:
+
+```python
+app.frontend("/", directory="dist", check_dir=False)
+```
+
+That deployed, but runtime requests for `/` and `/assets/...` returned `500`.
+The FastAPI API routes still worked. That means the problem is not FastAPI as an
+ASGI app and not the Python Worker ASGI bridge. The problem is that
+`app.frontend()` is filesystem-based, while Workers Static Assets are exposed
+through Cloudflare's asset serving layer and optional `env.ASSETS` binding.
+
+FastAPI's frontend support ultimately expects normal Python filesystem access
+through calls like `os.path.isdir()`, `os.stat()`, and file responses. Cloudflare
+Static Assets are uploaded separately from the Python Worker code and are not
+mounted as a `dist/` directory inside the Pyodide filesystem.
+
+## What Would Need To Change
+
+The ideal fix is option 1: Cloudflare should make the configured assets
+directory available to the Python Worker filesystem so `app.frontend()` truly
+just works, without any FastAPI or Starlette changes.
+
+1. Mount Workers Static Assets into the Python Worker filesystem.
+
+   If `assets.directory = "./dist/"` were mounted into the Python Worker at a
+   predictable filesystem path, then `app.frontend("/", directory="dist")` could
+   work exactly as FastAPI users expect. FastAPI would call `os.stat()` and
+   serve `dist/index.html` or `dist/assets/...` without knowing anything about
+   Cloudflare. This is the best developer experience because it preserves the
+   FastAPI API unchanged.
+
+2. Add a non-filesystem static asset backend to FastAPI or Starlette.
+
+   FastAPI's `app.frontend()` could eventually accept an abstract asset backend
+   instead of only a local directory. Cloudflare could then provide an
+   implementation backed by `env.ASSETS.fetch(request)`. This would be clean, but
+   it requires changes upstream in FastAPI or Starlette and would not be the
+   literal tutorial code.
+
+3. Teach the Python Workers ASGI adapter to bridge FastAPI frontend routes to
+   `env.ASSETS`.
+
+   Cloudflare's ASGI adapter could detect FastAPI's frontend route behavior and
+   translate those file lookups into asset binding fetches. That would make the
+   user code look closer to the FastAPI tutorial, but it would rely on FastAPI
+   internals and could be fragile as FastAPI evolves.
+
+4. Provide a Cloudflare-specific Python helper that mirrors `app.frontend()`.
+
+   Cloudflare could expose a helper or middleware that registers frontend
+   fallback behavior against the `ASSETS` binding, for example something shaped
+   like `app.cloudflare_frontend("/", assets_binding="ASSETS")`. This would be
+   useful, but it would still require users to learn a Cloudflare-specific API
+   instead of using FastAPI's built-in `app.frontend()`.
+
+Until option 1 or a similar filesystem bridge exists, the practical Workers
+architecture is what this repository uses today: Cloudflare Static Assets serves
+the frontend, and FastAPI running in Python Workers handles the API.
